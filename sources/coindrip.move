@@ -1,7 +1,7 @@
 module coindrip::coindrip;
 
 use std::string;
-use std::type_name::TypeName;
+use std::type_name::{TypeName, get};
 use sui::balance::{Self, Balance};
 use sui::clock::Clock;
 use sui::coin::{Self, Coin};
@@ -22,7 +22,7 @@ const ECliffTooBig: u64 = 6;
 
 public struct Segment has drop, store {
     amount: u64,
-    exponent: u64,
+    exponent: u8,
     duration: u64,
 }
 
@@ -31,6 +31,7 @@ public struct Stream<phantom T> has key, store {
     name: string::String,
     image_url: Url,
     sender: address,
+    token: std::ascii::String,
     balance: Balance<T>,
     initial_deposit: u64,
     start_time: u64,
@@ -69,33 +70,33 @@ fun init(otw: COINDRIP, ctx: &mut TxContext) {
     transfer::public_share_object(controller);
 }
 
-#[allow(lint(self_transfer))]
-public fun init_display<T>(_: &AdminCap, publisher: &Publisher, ctx: &mut TxContext) {
-    let keys = vector[
-        b"name".to_string(),
-        b"image_url".to_string(),
-        b"project_url".to_string(),
-        b"creator".to_string(),
-    ];
+// #[allow(lint(self_transfer))]
+// public fun init_display<T>(_: &AdminCap, publisher: &Publisher, ctx: &mut TxContext) {
+//     let keys = vector[
+//         b"name".to_string(),
+//         b"image_url".to_string(),
+//         b"project_url".to_string(),
+//         b"creator".to_string(),
+//     ];
 
-    let values = vector[
-        b"{name}".to_string(),
-        b"{image_url}".to_string(),
-        b"https://coindrip.finance".to_string(),
-        b"CoinDrip".to_string(),
-    ];
+//     let values = vector[
+//         b"{name}".to_string(),
+//         b"{image_url}".to_string(),
+//         b"https://coindrip.finance".to_string(),
+//         b"CoinDrip".to_string(),
+//     ];
 
-    let mut display = display::new_with_fields<Stream<T>>(
-        publisher,
-        keys,
-        values,
-        ctx,
-    );
+//     let mut display = display::new_with_fields<Stream<T>>(
+//         publisher,
+//         keys,
+//         values,
+//         ctx,
+//     );
 
-    display.update_version();
+//     display.update_version();
 
-    transfer::public_transfer(display, ctx.sender());
-}
+//     transfer::public_transfer(display, ctx.sender());
+// }
 
 public fun create_stream<T>(
     coin: Coin<T>,
@@ -130,11 +131,15 @@ public fun create_stream<T>(
     let coin_value = coin.value();
     let coin_balance = coin.into_balance();
 
+    // TODO: Implement protocol fee
+    // TODO: Implement broker fee
+
     let stream = Stream<T> {
         id: nftId,
         name: string::utf8(stream_name),
         image_url: url::new_unsafe_from_bytes(stream_image_url),
         sender,
+        token: get<T>().into_string(),
         balance: coin_balance,
         initial_deposit: coin_value,
         start_time,
@@ -143,6 +148,7 @@ public fun create_stream<T>(
         segments,
     };
 
+    // TODO: Add more details on the event
     event::emit(StreamCreated {
         stream_id: object::id(&stream),
         sender,
@@ -179,6 +185,54 @@ fun min(a: u64, b: u64): u64 {
     }
 }
 
+fun compute_segment_value(segment_start_time: u64, segment: &Segment, clock: &Clock): u64 {
+    let segment_end_time = segment_start_time + segment.duration;
+    let current_time = clock.timestamp_ms();
+
+    if (current_time < segment_start_time) {
+        return 0
+    };
+
+    if (current_time > segment_end_time) {
+        return segment.amount
+    };
+
+    let numerator = (current_time - segment_start_time).pow(segment.exponent) * segment.amount;
+    let denominator = segment.duration.pow(segment.exponent);
+
+    numerator / denominator
+}
+
+fun streamed_amount<T>(stream: &Stream<T>, clock: &Clock): u64 {
+    let current_time = clock.timestamp_ms();
+
+    if (current_time < stream.start_time) {
+        return 0
+    };
+
+    if (stream.start_time + stream.cliff > current_time) {
+        return 0
+    };
+
+    if (current_time > stream.end_time) {
+        return stream.initial_deposit
+    };
+
+    let mut i = 0;
+    let mut total = 0;
+    let mut segment_start_time = stream.start_time;
+
+    while (i < stream.segments.length()) {
+        let segment = stream.segments.borrow(i);
+        let segment_value = compute_segment_value(segment_start_time, segment, clock);
+        total = total + segment_value;
+        segment_start_time = segment_start_time + segment.duration;
+        i = i + 1;
+    };
+
+    min(total, stream.initial_deposit)
+}
+
 fun recipient_balance<T>(stream: &Stream<T>, clock: &Clock): u64 {
     let current_time = clock.timestamp_ms();
 
@@ -186,16 +240,26 @@ fun recipient_balance<T>(stream: &Stream<T>, clock: &Clock): u64 {
         return 0
     };
 
-    let streamed_so_far =
-        stream.initial_deposit * (current_time - stream.start_time) / (stream.end_time - stream.start_time);
-    let claimed_amount = stream.initial_deposit - stream.balance.value();
-    let recipient_balance = min(streamed_so_far, stream.initial_deposit) - claimed_amount;
+    if (stream.start_time + stream.cliff > current_time) {
+        return 0
+    };
 
-    recipient_balance
+    if (current_time > stream.end_time) {
+        return stream.balance.value()
+    };
+
+    let claimed_amount = stream.initial_deposit - stream.balance.value();
+    let streamed_amount = streamed_amount(stream, clock);
+
+    streamed_amount - claimed_amount
 }
 
 #[allow(lint(self_transfer))]
-public fun claim_from_stream<T>(stream: &mut Stream<T>, clock: &Clock, ctx: &mut TxContext) {
+public fun claim_from_stream<T>(
+    stream: &mut Stream<T>,
+    clock: &Clock,
+    ctx: &mut TxContext,
+): Coin<T> {
     let amount = recipient_balance(stream, clock);
 
     assert!(amount > 0, EZeroClaim);
@@ -208,8 +272,7 @@ public fun claim_from_stream<T>(stream: &mut Stream<T>, clock: &Clock, ctx: &mut
         amount: amount,
     });
 
-    let coin = coin::take(&mut stream.balance, amount, ctx);
-    transfer::public_transfer(coin, sender);
+    coin::take(&mut stream.balance, amount, ctx)
 }
 
 fun destroy_zero<T>(self: Stream<T>, ctx: TxContext) {
@@ -218,6 +281,7 @@ fun destroy_zero<T>(self: Stream<T>, ctx: TxContext) {
         name: _,
         image_url: _,
         sender: _,
+        token: _,
         balance,
         initial_deposit: _,
         start_time: _,
@@ -237,6 +301,14 @@ fun destroy_zero<T>(self: Stream<T>, ctx: TxContext) {
 
     object::delete(id);
     balance::destroy_zero(balance);
+}
+
+public fun new_segment(amount: u64, exponent: u8, duration: u64): Segment {
+    Segment {
+        amount,
+        exponent,
+        duration,
+    }
 }
 
 // === Events ===
