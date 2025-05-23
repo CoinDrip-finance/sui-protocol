@@ -2,6 +2,7 @@ module coindrip::coindrip;
 
 use std::string;
 use std::type_name::{TypeName, get};
+use std::u256;
 use sui::balance::{Self, Balance};
 use sui::clock::Clock;
 use sui::coin::{Self, Coin};
@@ -119,9 +120,6 @@ public fun create_stream<T>(
 
     let coin_value = coin.value();
     let coin_balance = coin.into_balance();
-
-    // TODO: Implement protocol fee
-    // TODO: Implement broker fee
 
     let stream = Stream<T> {
         id: nftId,
@@ -390,10 +388,18 @@ fun compute_segment_value(segment_start_time: u64, segment: &Segment, clock: &Cl
         return segment.amount
     };
 
-    let numerator = (current_time - segment_start_time).pow(segment.exponent) * segment.amount;
-    let denominator = segment.duration.pow(segment.exponent);
+    let elapsed_time = current_time - segment_start_time;
+    let elapsed_time_u256 = elapsed_time as u256;
+    let amount_u256 = segment.amount as u256;
+    let duration_u256 = segment.duration as u256;
 
-    numerator / denominator
+    let numerator = elapsed_time_u256.pow(segment.exponent) * amount_u256;
+    let denominator = duration_u256.pow(segment.exponent);
+
+    let result_option_u64 = u256::try_as_u64(numerator / denominator);
+    let final_result_u64 = option::destroy_some(result_option_u64);
+
+    final_result_u64
 }
 
 fun streamed_amount<T>(stream: &Stream<T>, clock: &Clock): u64 {
