@@ -18,12 +18,17 @@ const EInvalidEndTime: u64 = 3;
 const EZeroClaim: u64 = 4;
 const EBalanceNotZero: u64 = 5;
 const ECliffTooBig: u64 = 6;
-const EInvalidVersion: u64 = 6;
+const ESegmentValueOverflow: u64 = 7;
+const EInvalidExponent: u64 = 8;
+const ESegmentEndTimeOverflow: u64 = 9;
+const EStreamedAmountOverflow: u64 = 10;
+const EInvalidVersion: u64 = 11;
 
 // === Constants ===
 
 const STREAM_IMAGE_BASE_URL: vector<u8> = b"https://devnet.coindrip.finance/api/stream";
 const VERSION: u64 = 1;
+const MAX_EXPONENT: u8 = 10;
 
 // === Structs ===
 
@@ -204,6 +209,7 @@ public fun destroy_zero<T>(controller: &Controller, self: Stream<T>, ctx: &mut T
 
 public fun new_segment(controller: &Controller, amount: u64, exponent: u8, duration: u64): Segment {
     assert!(controller.version == VERSION, EInvalidVersion);
+    assert!(exponent <= MAX_EXPONENT, EInvalidExponent);
     Segment {
         amount,
         exponent,
@@ -377,7 +383,11 @@ fun min(a: u64, b: u64): u64 {
 }
 
 fun compute_segment_value(segment_start_time: u64, segment: &Segment, clock: &Clock): u64 {
-    let segment_end_time = segment_start_time + segment.duration;
+    // Check for overflow when computing segment end time
+    let segment_end_time_u128 = (segment_start_time as u128) + (segment.duration as u128);
+    assert!(segment_end_time_u128 <= (18446744073709551615 as u128), ESegmentEndTimeOverflow);
+    let segment_end_time = segment_end_time_u128 as u64;
+
     let current_time = clock.timestamp_ms();
 
     if (current_time < segment_start_time) {
@@ -397,6 +407,7 @@ fun compute_segment_value(segment_start_time: u64, segment: &Segment, clock: &Cl
     let denominator = duration_u256.pow(segment.exponent);
 
     let result_option_u64 = u256::try_as_u64(numerator / denominator);
+    assert!(option::is_some(&result_option_u64), ESegmentValueOverflow);
     let final_result_u64 = option::destroy_some(result_option_u64);
 
     final_result_u64
@@ -424,7 +435,11 @@ fun streamed_amount<T>(stream: &Stream<T>, clock: &Clock): u64 {
     while (i < stream.segments.length()) {
         let segment = stream.segments.borrow(i);
         let segment_value = compute_segment_value(segment_start_time, segment, clock);
+
+        // Check for overflow before addition
+        assert!(total <= 18446744073709551615 - segment_value, EStreamedAmountOverflow);
         total = total + segment_value;
+
         segment_start_time = segment_start_time + segment.duration;
         i = i + 1;
     };
