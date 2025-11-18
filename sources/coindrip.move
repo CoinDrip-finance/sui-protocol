@@ -1,14 +1,14 @@
 module coindrip::coindrip;
 
 use std::string;
-use std::type_name::{TypeName, get};
+use std::type_name::get;
 use std::u256;
 use sui::balance::{Self, Balance};
 use sui::clock::Clock;
 use sui::coin::{Self, Coin};
 use sui::event;
 use sui::package;
-use sui::table::{Self, Table};
+use sui::sui::SUI;
 
 // === Errors ===
 const EInsufficientBalance: u64 = 0;
@@ -23,12 +23,14 @@ const EInvalidExponent: u64 = 8;
 const ESegmentEndTimeOverflow: u64 = 9;
 const EStreamedAmountOverflow: u64 = 10;
 const EInvalidVersion: u64 = 11;
+const EInvalidFeeAmount: u64 = 12;
 
 // === Constants ===
 
 const STREAM_IMAGE_BASE_URL: vector<u8> = b"https://devnet.coindrip.finance/api/stream";
 const VERSION: u64 = 1;
 const MAX_EXPONENT: u8 = 10;
+const ONE_SUI: u64 = 1_000_000_000;
 
 // === Structs ===
 
@@ -56,10 +58,15 @@ public struct AdminCap has key, store {
     id: UID,
 }
 
+public struct UpdateFeeCap has key, store {
+    id: UID,
+}
+
 public struct Controller has key, store {
     id: UID,
     version: u64,
-    protocol_fee: Table<TypeName, u64>,
+    claim_fee: u64,
+    treasury: Balance<SUI>,
 }
 
 public struct COINDRIP has drop {}
@@ -155,12 +162,18 @@ public fun create_stream<T>(
 }
 
 public fun claim_from_stream<T>(
-    controller: &Controller,
+    controller: &mut Controller,
     stream: &mut Stream<T>,
+    fee_payment: Coin<SUI>,
     clock: &Clock,
     ctx: &mut TxContext,
 ): Coin<T> {
     assert!(controller.version == VERSION, EInvalidVersion);
+
+    // Validate and process claim fee
+    assert!(fee_payment.value() == controller.claim_fee, EInvalidFeeAmount);
+    coin::put(&mut controller.treasury, fee_payment);
+
     let balance_before_claim = stream.balance.value();
     let amount = recipient_balance(stream, clock);
 
@@ -298,6 +311,19 @@ public fun recipient_balance<T>(stream: &Stream<T>, clock: &Clock): u64 {
 
 // === Admin Functions ===
 
+public fun update_fee(_: &UpdateFeeCap, controller: &mut Controller, new_fee: u64) {
+    controller.claim_fee = new_fee;
+}
+
+public fun withdraw_treasury(
+    _: &AdminCap,
+    controller: &mut Controller,
+    ctx: &mut TxContext,
+): Coin<SUI> {
+    let amount = controller.treasury.value();
+    coin::take(&mut controller.treasury, amount, ctx)
+}
+
 // === Package Functions ===
 
 // === Private Functions ===
@@ -313,10 +339,17 @@ fun init(otw: COINDRIP, ctx: &mut TxContext) {
 
     transfer::public_transfer(admin_cap, ctx.sender());
 
+    let update_fee_cap = UpdateFeeCap {
+        id: object::new(ctx),
+    };
+
+    transfer::public_transfer(update_fee_cap, ctx.sender());
+
     let controller = Controller {
         id: object::new(ctx),
         version: VERSION,
-        protocol_fee: table::new<TypeName, u64>(ctx),
+        claim_fee: ONE_SUI / 4,
+        treasury: balance::zero<SUI>(),
     };
 
     transfer::public_share_object(controller);

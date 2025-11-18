@@ -4,10 +4,12 @@ module coindrip::coindrip_tests_destroy_zero;
 use coindrip::coindrip::{Self, Controller, Stream};
 use coindrip::coindrip_tests_create_stream::create_stream_hc1;
 use sui::clock::Clock;
+use sui::coin;
 use sui::sui::SUI;
 use sui::test_scenario as ts;
 
 const RECIPIENT: address = @0xBBB;
+const ONE_SUI: u64 = 1_000_000_000;
 
 const EBalanceNotZero: u64 = 5;
 
@@ -19,14 +21,16 @@ public fun claim_from_stream_hc6() {
     scenario.next_tx(RECIPIENT);
     {
         let mut clock = scenario.take_shared<Clock>();
-        let controller = ts::take_shared<Controller>(&scenario);
+        let mut controller = ts::take_shared<Controller>(&scenario);
         clock.increment_for_testing(1000);
 
         let mut stream = ts::take_from_sender<Stream<SUI>>(&scenario);
 
+        let fee_coin = coin::mint_for_testing<SUI>(ONE_SUI / 4, scenario.ctx());
         let coin = coindrip::claim_from_stream(
-            &controller,
+            &mut controller,
             &mut stream,
+            fee_coin,
             &clock,
             scenario.ctx(),
         );
@@ -63,14 +67,16 @@ public fun claim_from_stream_fc10() {
     scenario.next_tx(RECIPIENT);
     {
         let mut clock = scenario.take_shared<Clock>();
-        let controller = ts::take_shared<Controller>(&scenario);
+        let mut controller = ts::take_shared<Controller>(&scenario);
         clock.increment_for_testing(500);
 
         let mut stream = ts::take_from_sender<Stream<SUI>>(&scenario);
 
+        let fee_coin = coin::mint_for_testing<SUI>(ONE_SUI / 4, scenario.ctx());
         let coin = coindrip::claim_from_stream(
-            &controller,
+            &mut controller,
             &mut stream,
+            fee_coin,
             &clock,
             scenario.ctx(),
         );

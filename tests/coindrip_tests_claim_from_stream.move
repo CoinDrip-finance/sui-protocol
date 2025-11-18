@@ -22,14 +22,16 @@ public fun claim_from_stream_hc3() {
     scenario.next_tx(RECIPIENT);
     {
         let mut clock = scenario.take_shared<Clock>();
-        let controller = ts::take_shared<Controller>(&scenario);
+        let mut controller = ts::take_shared<Controller>(&scenario);
         clock.increment_for_testing(500);
 
         let mut stream = ts::take_from_sender<Stream<SUI>>(&scenario);
 
+        let fee_coin = coin::mint_for_testing<SUI>(ONE_SUI / 4, scenario.ctx());
         let coin = coindrip::claim_from_stream(
-            &controller,
+            &mut controller,
             &mut stream,
+            fee_coin,
             &clock,
             scenario.ctx(),
         );
@@ -61,14 +63,16 @@ public fun claim_from_stream_hc4() {
     scenario.next_tx(RECIPIENT);
     {
         let mut clock = scenario.take_shared<Clock>();
-        let controller = ts::take_shared<Controller>(&scenario);
+        let mut controller = ts::take_shared<Controller>(&scenario);
         clock.increment_for_testing(1001);
 
         let mut stream = ts::take_from_sender<Stream<SUI>>(&scenario);
 
+        let fee_coin = coin::mint_for_testing<SUI>(ONE_SUI / 4, scenario.ctx());
         let coin = coindrip::claim_from_stream(
-            &controller,
+            &mut controller,
             &mut stream,
+            fee_coin,
             &clock,
             scenario.ctx(),
         );
@@ -102,14 +106,16 @@ public fun claim_from_stream_hc5() {
     scenario.next_tx(RECIPIENT);
     {
         let mut clock = scenario.take_shared<Clock>();
-        let controller = ts::take_shared<Controller>(&scenario);
+        let mut controller = ts::take_shared<Controller>(&scenario);
         clock.increment_for_testing(250);
 
         let mut stream = ts::take_from_sender<Stream<SUI>>(&scenario);
 
+        let fee_coin = coin::mint_for_testing<SUI>(ONE_SUI / 4, scenario.ctx());
         let coin = coindrip::claim_from_stream(
-            &controller,
+            &mut controller,
             &mut stream,
+            fee_coin,
             &clock,
             scenario.ctx(),
         );
@@ -135,14 +141,16 @@ public fun claim_from_stream_hc5() {
     scenario.next_tx(RECIPIENT);
     {
         let mut clock = scenario.take_shared<Clock>();
-        let controller = ts::take_shared<Controller>(&scenario);
+        let mut controller = ts::take_shared<Controller>(&scenario);
         clock.increment_for_testing(250);
 
         let mut stream = ts::take_from_sender<Stream<SUI>>(&scenario);
 
+        let fee_coin = coin::mint_for_testing<SUI>(ONE_SUI / 4, scenario.ctx());
         let coin = coindrip::claim_from_stream(
-            &controller,
+            &mut controller,
             &mut stream,
+            fee_coin,
             &clock,
             scenario.ctx(),
         );
@@ -169,7 +177,7 @@ public fun claim_from_stream_hc5() {
     scenario.end();
 }
 
-// Attempt to claim before the stream’s start time.
+// Attempt to claim before the stream's start time.
 #[test]
 #[expected_failure(abort_code = EZeroClaim, location = coindrip)]
 public fun claim_from_stream_fc7() {
@@ -201,13 +209,15 @@ public fun claim_from_stream_fc7() {
     scenario.next_tx(RECIPIENT);
     {
         let clock = scenario.take_shared<Clock>();
-        let controller = ts::take_shared<Controller>(&scenario);
+        let mut controller = ts::take_shared<Controller>(&scenario);
 
         let mut stream = ts::take_from_sender<Stream<SUI>>(&scenario);
 
+        let fee_coin = coin::mint_for_testing<SUI>(ONE_SUI / 4, scenario.ctx());
         let coin = coindrip::claim_from_stream(
-            &controller,
+            &mut controller,
             &mut stream,
+            fee_coin,
             &clock,
             scenario.ctx(),
         );
@@ -253,14 +263,16 @@ public fun claim_from_stream_fc8() {
     scenario.next_tx(RECIPIENT);
     {
         let mut clock = scenario.take_shared<Clock>();
-        let controller = ts::take_shared<Controller>(&scenario);
+        let mut controller = ts::take_shared<Controller>(&scenario);
         clock.increment_for_testing(200);
 
         let mut stream = ts::take_from_sender<Stream<SUI>>(&scenario);
 
+        let fee_coin = coin::mint_for_testing<SUI>(ONE_SUI / 4, scenario.ctx());
         let coin = coindrip::claim_from_stream(
-            &controller,
+            &mut controller,
             &mut stream,
+            fee_coin,
             &clock,
             scenario.ctx(),
         );
@@ -284,14 +296,16 @@ public fun claim_from_stream_fc9() {
     scenario.next_tx(RECIPIENT);
     {
         let mut clock = scenario.take_shared<Clock>();
-        let controller = ts::take_shared<Controller>(&scenario);
+        let mut controller = ts::take_shared<Controller>(&scenario);
         clock.increment_for_testing(2000);
 
         let mut stream = ts::take_from_sender<Stream<SUI>>(&scenario);
 
+        let fee_coin = coin::mint_for_testing<SUI>(ONE_SUI / 4, scenario.ctx());
         let coin = coindrip::claim_from_stream(
-            &controller,
+            &mut controller,
             &mut stream,
+            fee_coin,
             &clock,
             scenario.ctx(),
         );
@@ -317,14 +331,16 @@ public fun claim_from_stream_fc9() {
     scenario.next_tx(RECIPIENT);
     {
         let mut clock = scenario.take_shared<Clock>();
-        let controller = ts::take_shared<Controller>(&scenario);
+        let mut controller = ts::take_shared<Controller>(&scenario);
         clock.increment_for_testing(200);
 
         let mut stream = ts::take_from_sender<Stream<SUI>>(&scenario);
 
+        let fee_coin = coin::mint_for_testing<SUI>(ONE_SUI / 4, scenario.ctx());
         let coin = coindrip::claim_from_stream(
-            &controller,
+            &mut controller,
             &mut stream,
+            fee_coin,
             &clock,
             scenario.ctx(),
         );
@@ -347,13 +363,15 @@ public fun claim_from_stream_ec5() {
     scenario.next_tx(RECIPIENT);
     {
         let clock = scenario.take_shared<Clock>();
-        let controller = ts::take_shared<Controller>(&scenario);
+        let mut controller = ts::take_shared<Controller>(&scenario);
 
         let mut stream = ts::take_from_sender<Stream<SUI>>(&scenario);
 
+        let fee_coin = coin::mint_for_testing<SUI>(ONE_SUI / 4, scenario.ctx());
         let coin = coindrip::claim_from_stream(
-            &controller,
+            &mut controller,
             &mut stream,
+            fee_coin,
             &clock,
             scenario.ctx(),
         );
@@ -399,12 +417,14 @@ public fun claim_from_stream_ec6() {
     scenario.next_tx(RECIPIENT);
     {
         let clock = scenario.take_shared<Clock>();
-        let controller = ts::take_shared<Controller>(&scenario);
+        let mut controller = ts::take_shared<Controller>(&scenario);
         let mut stream = ts::take_from_sender<Stream<SUI>>(&scenario);
 
+        let fee_coin = coin::mint_for_testing<SUI>(ONE_SUI / 4, scenario.ctx());
         let coin = coindrip::claim_from_stream(
-            &controller,
+            &mut controller,
             &mut stream,
+            fee_coin,
             &clock,
             scenario.ctx(),
         );
@@ -449,13 +469,15 @@ public fun claim_from_stream_ec7() {
     scenario.next_tx(RECIPIENT);
     {
         let mut clock = scenario.take_shared<Clock>();
-        let controller = ts::take_shared<Controller>(&scenario);
+        let mut controller = ts::take_shared<Controller>(&scenario);
         clock.increment_for_testing(500);
         let mut stream = ts::take_from_sender<Stream<SUI>>(&scenario);
 
+        let fee_coin = coin::mint_for_testing<SUI>(ONE_SUI / 4, scenario.ctx());
         let coin = coindrip::claim_from_stream(
-            &controller,
+            &mut controller,
             &mut stream,
+            fee_coin,
             &clock,
             scenario.ctx(),
         );
