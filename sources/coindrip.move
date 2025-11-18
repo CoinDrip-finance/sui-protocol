@@ -288,6 +288,14 @@ public fun get_segment_exponent(segment: &Segment): u8 {
     segment.exponent
 }
 
+public fun get_claim_fee(controller: &Controller): u64 {
+    controller.claim_fee
+}
+
+public fun get_treasury_balance(controller: &Controller): u64 {
+    controller.treasury.value()
+}
+
 public fun recipient_balance<T>(stream: &Stream<T>, clock: &Clock): u64 {
     let current_time = clock.timestamp_ms();
 
