@@ -20,10 +20,12 @@ const EBalanceNotZero: u64 = 5;
 const ECliffTooBig: u64 = 6;
 const ESegmentValueOverflow: u64 = 7;
 const EInvalidExponent: u64 = 8;
-const ESegmentEndTimeOverflow: u64 = 9;
-const EStreamedAmountOverflow: u64 = 10;
 const EInvalidVersion: u64 = 11;
 const EInvalidFeeAmount: u64 = 12;
+const ETruncationDataTooShort: u64 = 13;
+const ETooManySegments: u64 = 14;
+const EInvalidSegmentDuration: u64 = 15;
+const EFeeTooHigh: u64 = 16;
 
 // === Constants ===
 
@@ -31,42 +33,56 @@ const STREAM_IMAGE_BASE_URL: vector<u8> = b"https://devnet.coindrip.finance/api/
 const VERSION: u64 = 1;
 const MAX_EXPONENT: u8 = 10;
 const ONE_SUI: u64 = 1_000_000_000;
+const MAX_DURATION_TICKS: u64 = 525_600; // Max ticks to prevent overflow at exp=10
+const MAX_SEGMENT_DURATION: u64 = 189_345_600_000; // ~6 years in milliseconds
+const MAX_SEGMENTS: u64 = 500;
+const MAX_CLAIM_FEE: u64 = 50_000_000_000; // 50 SUI max
 
 // === Structs ===
 
+/// A segment defines a portion of a stream with its own streaming curve.
+/// The streaming curve follows the formula: streamed = amount * (elapsed / duration)^exponent
+/// - exponent = 1: linear streaming
+/// - exponent > 1: exponential streaming (slow start, fast end)
 public struct Segment has copy, drop, store {
-    amount: u64,
-    exponent: u8,
-    duration: u64,
+    amount: u64,     // Total tokens to stream in this segment
+    exponent: u8,    // Curve exponent (1-10), controls streaming speed distribution
+    duration: u64,   // Duration of this segment in milliseconds
 }
 
+/// A token stream that vests tokens over time according to defined segments.
+/// The stream is represented as an NFT that can be transferred to change the recipient.
 public struct Stream<phantom T> has key, store {
     id: UID,
     name: string::String,
     image_url: string::String,
-    sender: address,
-    token: std::ascii::String,
-    balance: Balance<T>,
-    initial_deposit: u64,
-    start_time: u64,
-    end_time: u64,
-    segments: vector<Segment>,
-    cliff: u64,
+    sender: address,              // Original creator of the stream
+    token: std::ascii::String,    // Token type identifier
+    balance: Balance<T>,          // Remaining tokens in the stream
+    initial_deposit: u64,         // Original amount deposited
+    start_time: u64,              // Stream start timestamp (ms)
+    end_time: u64,                // Stream end timestamp (ms)
+    segments: vector<Segment>,    // Streaming curve segments
+    cliff: u64,                   // Cliff duration (ms) - no tokens claimable until cliff passes
+    tick_size: u64,               // Pre-computed tick size for segment calculations
 }
 
+/// Capability granting full admin privileges (treasury withdrawal, version migration)
 public struct AdminCap has key, store {
     id: UID,
 }
 
+/// Capability granting permission to update the claim fee
 public struct UpdateFeeCap has key, store {
     id: UID,
 }
 
+/// Global controller managing protocol configuration and fee collection
 public struct Controller has key, store {
     id: UID,
-    version: u64,
-    claim_fee: u64,
-    treasury: Balance<SUI>,
+    version: u64,            // Protocol version for upgrade compatibility
+    claim_fee: u64,          // Fee charged per claim (in MIST)
+    treasury: Balance<SUI>,  // Accumulated fees
 }
 
 public struct COINDRIP has drop {}
@@ -98,6 +114,8 @@ public struct StreamDestroyed has copy, drop {
 
 // === Public Functions ===
 
+/// Creates a new token stream with the specified parameters.
+/// Returns a Stream NFT that represents the vesting schedule.
 public fun create_stream<T>(
     controller: &Controller,
     coin: Coin<T>,
@@ -118,6 +136,18 @@ public fun create_stream<T>(
     let end_time = start_time + stream_duration;
     assert!(end_time > start_time, EInvalidEndTime);
     assert!(start_time + cliff < end_time, ECliffTooBig);
+
+    // Compute tick_size based on max segment duration (computed once at creation)
+    let mut max_duration: u64 = 0;
+    let mut j = 0;
+    while (j < segments.length()) {
+        let seg = segments.borrow(j);
+        if (seg.duration > max_duration) {
+            max_duration = seg.duration;
+        };
+        j = j + 1;
+    };
+    let tick_size = compute_tick_size(max_duration);
 
     let nftId = object::new(ctx);
     let objectIdString = nftId.to_address().to_string().as_bytes();
@@ -145,6 +175,7 @@ public fun create_stream<T>(
         end_time,
         cliff,
         segments,
+        tick_size,
     };
 
     event::emit(StreamCreated {
@@ -161,6 +192,8 @@ public fun create_stream<T>(
     stream
 }
 
+/// Claims available tokens from a stream. The caller must be the stream owner.
+/// Requires exact fee payment matching controller.claim_fee.
 public fun claim_from_stream<T>(
     controller: &mut Controller,
     stream: &mut Stream<T>,
@@ -191,6 +224,8 @@ public fun claim_from_stream<T>(
     coin::take(&mut stream.balance, amount, ctx)
 }
 
+/// Destroys a fully claimed stream (balance must be zero).
+/// Cleans up the Stream object after all tokens have been claimed.
 public fun destroy_zero<T>(controller: &Controller, self: Stream<T>, ctx: &mut TxContext) {
     assert!(controller.version == VERSION, EInvalidVersion);
     let Stream {
@@ -205,6 +240,7 @@ public fun destroy_zero<T>(controller: &Controller, self: Stream<T>, ctx: &mut T
         end_time: _,
         cliff: _,
         segments: _,
+        tick_size: _,
     } = self;
 
     assert!(balance.value() == 0, EBalanceNotZero);
@@ -220,9 +256,13 @@ public fun destroy_zero<T>(controller: &Controller, self: Stream<T>, ctx: &mut T
     balance::destroy_zero(balance);
 }
 
+/// Creates a new segment with the specified parameters.
+/// Validates: exponent <= 10, 0 < duration <= ~6 years
 public fun new_segment(controller: &Controller, amount: u64, exponent: u8, duration: u64): Segment {
     assert!(controller.version == VERSION, EInvalidVersion);
     assert!(exponent <= MAX_EXPONENT, EInvalidExponent);
+    assert!(duration > 0, EInvalidSegments);
+    assert!(duration <= MAX_SEGMENT_DURATION, EInvalidSegmentDuration);
     Segment {
         amount,
         exponent,
@@ -296,17 +336,22 @@ public fun get_treasury_balance(controller: &Controller): u64 {
     controller.treasury.value()
 }
 
+/// Returns the amount of tokens currently claimable by the stream recipient.
+/// This is calculated as: total_streamed - already_claimed
 public fun recipient_balance<T>(stream: &Stream<T>, clock: &Clock): u64 {
     let current_time = clock.timestamp_ms();
 
+    // Stream hasn't started yet
     if (current_time < stream.start_time) {
         return 0
     };
 
+    // Still within cliff period
     if (stream.start_time + stream.cliff > current_time) {
         return 0
     };
 
+    // Stream has ended - return all remaining balance
     if (current_time > stream.end_time) {
         return stream.balance.value()
     };
@@ -319,10 +364,13 @@ public fun recipient_balance<T>(stream: &Stream<T>, clock: &Clock): u64 {
 
 // === Admin Functions ===
 
+/// Updates the claim fee. Requires UpdateFeeCap capability.
 public fun update_fee(_: &UpdateFeeCap, controller: &mut Controller, new_fee: u64) {
+    assert!(new_fee <= MAX_CLAIM_FEE, EFeeTooHigh);
     controller.claim_fee = new_fee;
 }
 
+/// Withdraws all accumulated fees from the treasury. Requires AdminCap capability.
 public fun withdraw_treasury(
     _: &AdminCap,
     controller: &mut Controller,
@@ -332,7 +380,11 @@ public fun withdraw_treasury(
     coin::take(&mut controller.treasury, amount, ctx)
 }
 
-// === Package Functions ===
+/// Updates the controller version after a package upgrade. Requires AdminCap capability.
+/// This is necessary to re-enable protocol functions after upgrading the package.
+public fun migrate_controller_version(_: &AdminCap, controller: &mut Controller, new_version: u64) {
+    controller.version = new_version;
+}
 
 // === Private Functions ===
 
@@ -367,7 +419,7 @@ fun truncate_with_ellipsis(data: &vector<u8>): vector<u8> {
     let len = vector::length(data);
 
     // Ensure the vector has at least 8 bytes to avoid out-of-bounds access
-    assert!(len >= 8, 0);
+    assert!(len >= 8, ETruncationDataTooShort);
 
     // Extract the first 4 bytes
     let mut first_four = vector::empty<u8>();
@@ -397,7 +449,11 @@ fun truncate_with_ellipsis(data: &vector<u8>): vector<u8> {
     result
 }
 
+/// Validates that segments are properly configured and returns the total stream duration.
+/// Ensures: segment count <= MAX_SEGMENTS, all durations > 0, total amount == deposit
 fun validate_stream_segments(deposit_amount: u64, segments: &vector<Segment>): u64 {
+    assert!(segments.length() <= MAX_SEGMENTS, ETooManySegments);
+
     let mut total_duration = 0;
     let mut total_amount = 0;
 
@@ -423,37 +479,55 @@ fun min(a: u64, b: u64): u64 {
     }
 }
 
-fun compute_segment_value(segment_start_time: u64, segment: &Segment, clock: &Clock): u64 {
-    // Check for overflow when computing segment end time
-    let segment_end_time_u128 = (segment_start_time as u128) + (segment.duration as u128);
-    assert!(segment_end_time_u128 <= (18446744073709551615 as u128), ESegmentEndTimeOverflow);
-    let segment_end_time = segment_end_time_u128 as u64;
+/// Computes the tick size for duration-based calculations.
+/// For short durations, uses millisecond precision (tick_size = 1).
+/// For long durations, uses coarser ticks to prevent overflow in exponentiation.
+fun compute_tick_size(duration: u64): u64 {
+    if (duration <= MAX_DURATION_TICKS) {
+        return 1
+    };
+    // tick_size = ceil(duration / MAX_DURATION_TICKS)
+    (duration + MAX_DURATION_TICKS - 1) / MAX_DURATION_TICKS
+}
 
+/// Computes the streamed amount for a single segment at the current time.
+/// Formula: amount * (elapsed_ticks / duration_ticks)^exponent
+/// Uses tick-based calculation to prevent overflow with large durations.
+fun compute_segment_value(segment_start_time: u64, segment: &Segment, tick_size: u64, clock: &Clock): u64 {
+    let segment_end_time = segment_start_time + segment.duration;
     let current_time = clock.timestamp_ms();
 
-    if (current_time < segment_start_time) {
+    // Segment hasn't started
+    if (current_time <= segment_start_time) {
         return 0
     };
 
-    if (current_time > segment_end_time) {
+    // Segment has completed
+    if (current_time >= segment_end_time) {
         return segment.amount
     };
 
     let elapsed_time = current_time - segment_start_time;
-    let elapsed_time_u256 = elapsed_time as u256;
-    let amount_u256 = segment.amount as u256;
-    let duration_u256 = segment.duration as u256;
 
-    let numerator = elapsed_time_u256.pow(segment.exponent) * amount_u256;
-    let denominator = duration_u256.pow(segment.exponent);
+    // Convert to ticks to prevent overflow in exponentiation
+    let elapsed_ticks = elapsed_time / tick_size;
+    let duration_ticks = segment.duration / tick_size;
+
+    // Calculate: (elapsed/duration)^exponent * amount using u256 for precision
+    let elapsed_ticks_u256 = elapsed_ticks as u256;
+    let amount_u256 = segment.amount as u256;
+    let duration_ticks_u256 = duration_ticks as u256;
+
+    let numerator = elapsed_ticks_u256.pow(segment.exponent) * amount_u256;
+    let denominator = duration_ticks_u256.pow(segment.exponent);
 
     let result_option_u64 = u256::try_as_u64(numerator / denominator);
     assert!(option::is_some(&result_option_u64), ESegmentValueOverflow);
-    let final_result_u64 = option::destroy_some(result_option_u64);
-
-    final_result_u64
+    option::destroy_some(result_option_u64)
 }
 
+/// Calculates the total amount streamed across all segments at the current time.
+/// Uses the pre-computed tick_size stored in the stream for efficient calculation.
 fun streamed_amount<T>(stream: &Stream<T>, clock: &Clock): u64 {
     let current_time = clock.timestamp_ms();
 
@@ -469,22 +543,26 @@ fun streamed_amount<T>(stream: &Stream<T>, clock: &Clock): u64 {
         return stream.initial_deposit
     };
 
+    // Sum up streamed amounts from each segment using pre-computed tick_size
     let mut i = 0;
     let mut total = 0;
     let mut segment_start_time = stream.start_time;
 
     while (i < stream.segments.length()) {
-        let segment = stream.segments.borrow(i);
-        let segment_value = compute_segment_value(segment_start_time, segment, clock);
+        // Early exit if segment hasn't started yet (all subsequent segments are in the future)
+        if (segment_start_time > current_time) {
+            break
+        };
 
-        // Check for overflow before addition
-        assert!(total <= 18446744073709551615 - segment_value, EStreamedAmountOverflow);
+        let segment = stream.segments.borrow(i);
+        let segment_value = compute_segment_value(segment_start_time, segment, stream.tick_size, clock);
         total = total + segment_value;
 
         segment_start_time = segment_start_time + segment.duration;
         i = i + 1;
     };
 
+    // Cap at initial deposit to handle any rounding edge cases
     min(total, stream.initial_deposit)
 }
 
@@ -505,7 +583,33 @@ public fun validate_stream_segments_for_test(deposit_amount: u64, segments: &vec
 public fun compute_segment_value_for_test(
     segment_start_time: u64,
     segment: &Segment,
+    tick_size: u64,
     clock: &Clock,
 ): u64 {
-    compute_segment_value(segment_start_time, segment, clock)
+    compute_segment_value(segment_start_time, segment, tick_size, clock)
+}
+
+#[test_only]
+public fun compute_tick_size_for_test(duration: u64): u64 {
+    compute_tick_size(duration)
+}
+
+#[test_only]
+public fun get_max_duration_ticks(): u64 {
+    MAX_DURATION_TICKS
+}
+
+#[test_only]
+public fun get_max_segment_duration(): u64 {
+    MAX_SEGMENT_DURATION
+}
+
+#[test_only]
+public fun get_max_segments(): u64 {
+    MAX_SEGMENTS
+}
+
+#[test_only]
+public fun get_max_claim_fee(): u64 {
+    MAX_CLAIM_FEE
 }

@@ -4,15 +4,13 @@ module coindrip::coindrip_tests_helper_functions;
 use coindrip::coindrip::{
     Self,
     Controller,
-    Stream,
     Segment,
     validate_stream_segments_for_test,
-    compute_segment_value_for_test
+    compute_segment_value_for_test,
+    compute_tick_size_for_test
 };
-use coindrip::coindrip_tests_create_stream::create_stream_hc1;
 use coindrip::coindrip_tests_setup::setup;
 use sui::clock::Clock;
-use sui::sui::SUI;
 use sui::test_scenario as ts;
 
 const RECIPIENT: address = @0xBBB;
@@ -48,7 +46,9 @@ public fun claim_from_stream_hc8() {
 
         let segment = coindrip::new_segment(&controller, 1000, 1, 1000);
 
-        let duration = compute_segment_value_for_test(1000, &segment, &clock);
+        // Compute tick_size based on segment duration (1000 ms -> tick_size = 1)
+        let tick_size = compute_tick_size_for_test(1000);
+        let duration = compute_segment_value_for_test(1000, &segment, tick_size, &clock);
 
         assert!(duration == 500);
 
